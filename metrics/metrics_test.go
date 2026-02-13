@@ -440,3 +440,281 @@ func TestProcessConfigscanClusterMetrics(t *testing.T) {
 	assert.Equal(t, int64(17), totalLow)
 	assert.Equal(t, int64(7), totalUnknown)
 }
+
+func TestProcessVulnDetailMetrics(t *testing.T) {
+	// Create summaries that reference "all" and "relevant" manifests
+	summaries := &v1beta1.VulnerabilityManifestSummaryList{
+		Items: []v1beta1.VulnerabilityManifestSummary{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"kubescape.io/workload-name":           "grafana",
+						"kubescape.io/workload-kind":           "Deployment",
+						"kubescape.io/workload-namespace":      "grafana",
+						"kubescape.io/workload-container-name": "grafana",
+					},
+				},
+				Spec: v1beta1.VulnerabilityManifestSummarySpec{
+					Severities: v1beta1.SeveritySummary{
+						Critical: v1beta1.VulnerabilityCounters{All: 1, Relevant: 1},
+						High:     v1beta1.VulnerabilityCounters{All: 2, Relevant: 0},
+					},
+					Vulnerabilities: v1beta1.VulnerabilitiesComponents{
+						ImageVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
+							Namespace: "kubescape",
+							Name:      "grafana-all",
+						},
+						WorkloadVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
+							Namespace: "kubescape",
+							Name:      "grafana-relevant",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Create manifests: "all" has 3 CVEs, "relevant" has only 1
+	manifests := &v1beta1.VulnerabilityManifestList{
+		Items: []v1beta1.VulnerabilityManifest{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "grafana-all",
+					Namespace: "kubescape",
+					Annotations: map[string]string{
+						"kubescape.io/image-tag": "grafana/grafana:10.3.1",
+					},
+				},
+				Spec: v1beta1.VulnerabilityManifestSpec{
+					Payload: v1beta1.GrypeDocument{
+						Matches: []v1beta1.Match{
+							{
+								Vulnerability: v1beta1.Vulnerability{
+									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+										ID:       "CVE-2024-1234",
+										Severity: "Critical",
+										Cvss: []v1beta1.Cvss{
+											{Metrics: v1beta1.CvssMetrics{BaseScore: 9.8}},
+										},
+									},
+									Fix: v1beta1.Fix{
+										Versions: []string{"3.0.14"},
+										State:    "fixed",
+									},
+								},
+								Artifact: v1beta1.GrypePackage{
+									Name:    "openssl",
+									Version: "3.0.1",
+								},
+							},
+							{
+								Vulnerability: v1beta1.Vulnerability{
+									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+										ID:       "CVE-2024-5678",
+										Severity: "High",
+										Cvss: []v1beta1.Cvss{
+											{Metrics: v1beta1.CvssMetrics{BaseScore: 7.5}},
+										},
+									},
+									Fix: v1beta1.Fix{
+										State: "not-fixed",
+									},
+								},
+								Artifact: v1beta1.GrypePackage{
+									Name:    "libcurl",
+									Version: "7.88.0",
+								},
+							},
+							{
+								Vulnerability: v1beta1.Vulnerability{
+									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+										ID:       "CVE-2024-9999",
+										Severity: "High",
+										Cvss: []v1beta1.Cvss{
+											{Metrics: v1beta1.CvssMetrics{BaseScore: 8.1}},
+										},
+									},
+									Fix: v1beta1.Fix{
+										Versions: []string{"2.0.0"},
+										State:    "fixed",
+									},
+								},
+								Artifact: v1beta1.GrypePackage{
+									Name:    "zlib",
+									Version: "1.2.11",
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				// Relevant manifest: only CVE-2024-1234 is runtime-relevant
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "grafana-relevant",
+					Namespace: "kubescape",
+				},
+				Spec: v1beta1.VulnerabilityManifestSpec{
+					Payload: v1beta1.GrypeDocument{
+						Matches: []v1beta1.Match{
+							{
+								Vulnerability: v1beta1.Vulnerability{
+									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+										ID:       "CVE-2024-1234",
+										Severity: "Critical",
+									},
+								},
+								Artifact: v1beta1.GrypePackage{
+									Name:    "openssl",
+									Version: "3.0.1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ProcessVulnDetailMetrics(summaries, manifests)
+
+	// Verify CVE-2024-1234 info metric
+	infoMetric := &dto.Metric{}
+	ggeInfo, _ := vulnerabilityInfo.GetMetricWithLabelValues(
+		"CVE-2024-1234", "critical", "openssl", "3.0.1", "3.0.14", "fixed",
+		"grafana", "grafana", "deployment", "grafana", "grafana/grafana:10.3.1",
+	)
+	_ = ggeInfo.Write(infoMetric)
+	assert.Equal(t, float64(1), infoMetric.Gauge.GetValue(), "Expected vulnerability_info to be 1")
+
+	// Verify CVE-2024-1234 CVSS score
+	cvssMetric := &dto.Metric{}
+	ggeCvss, _ := vulnerabilityCvss.GetMetricWithLabelValues("CVE-2024-1234", "critical", "grafana", "grafana")
+	_ = ggeCvss.Write(cvssMetric)
+	assert.Equal(t, float64(9.8), cvssMetric.Gauge.GetValue(), "Expected CVSS 9.8")
+
+	// Verify CVE-2024-5678 CVSS score
+	cvssMetric2 := &dto.Metric{}
+	ggeCvss2, _ := vulnerabilityCvss.GetMetricWithLabelValues("CVE-2024-5678", "high", "grafana", "grafana")
+	_ = ggeCvss2.Write(cvssMetric2)
+	assert.Equal(t, float64(7.5), cvssMetric2.Gauge.GetValue(), "Expected CVSS 7.5")
+
+	// Verify CVE-2024-1234 is relevant (appears in relevant manifest)
+	relMetric := &dto.Metric{}
+	ggeRel, _ := vulnerabilityRelevant.GetMetricWithLabelValues("CVE-2024-1234", "grafana", "grafana")
+	_ = ggeRel.Write(relMetric)
+	assert.Equal(t, float64(1), relMetric.Gauge.GetValue(), "Expected CVE-2024-1234 to be relevant")
+
+	// Verify CVE-2024-5678 is NOT relevant
+	notRelMetric := &dto.Metric{}
+	ggeNotRel, _ := vulnerabilityRelevant.GetMetricWithLabelValues("CVE-2024-5678", "grafana", "grafana")
+	_ = ggeNotRel.Write(notRelMetric)
+	assert.Equal(t, float64(0), notRelMetric.Gauge.GetValue(), "Expected CVE-2024-5678 to NOT be relevant")
+
+	// Verify CVE-2024-9999 is NOT relevant
+	notRelMetric2 := &dto.Metric{}
+	ggeNotRel2, _ := vulnerabilityRelevant.GetMetricWithLabelValues("CVE-2024-9999", "grafana", "grafana")
+	_ = ggeNotRel2.Write(notRelMetric2)
+	assert.Equal(t, float64(0), notRelMetric2.Gauge.GetValue(), "Expected CVE-2024-9999 to NOT be relevant")
+
+	// Verify fix_state="not-fixed" for CVE-2024-5678
+	noFixMetric := &dto.Metric{}
+	ggeNoFix, _ := vulnerabilityInfo.GetMetricWithLabelValues(
+		"CVE-2024-5678", "high", "libcurl", "7.88.0", "", "not-fixed",
+		"grafana", "grafana", "deployment", "grafana", "grafana/grafana:10.3.1",
+	)
+	_ = ggeNoFix.Write(noFixMetric)
+	assert.Equal(t, float64(1), noFixMetric.Gauge.GetValue(), "Expected vulnerability_info for unfixed CVE")
+}
+
+func TestProcessRuntimeMetrics(t *testing.T) {
+	profiles := &v1beta1.ApplicationProfileList{
+		Items: []v1beta1.ApplicationProfile{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"kubescape.io/workload-name":      "grafana",
+						"kubescape.io/workload-kind":      "Deployment",
+						"kubescape.io/workload-namespace": "grafana",
+					},
+					Annotations: map[string]string{
+						"kubescape.io/status": "completed",
+					},
+				},
+				Spec: v1beta1.ApplicationProfileSpec{
+					Containers: []v1beta1.ApplicationProfileContainer{
+						{
+							Name:     "grafana",
+							Syscalls: []string{"read", "write", "openat", "close", "mmap"},
+						},
+						{
+							Name:     "sidecar",
+							Syscalls: []string{"read", "write", "epoll_wait"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	networks := &v1beta1.NetworkNeighborhoodList{
+		Items: []v1beta1.NetworkNeighborhood{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"kubescape.io/workload-name":      "grafana",
+						"kubescape.io/workload-namespace": "grafana",
+					},
+				},
+				Spec: v1beta1.NetworkNeighborhoodSpec{
+					Containers: []v1beta1.NetworkNeighborhoodContainer{
+						{
+							Name: "grafana",
+							Ingress: []v1beta1.NetworkNeighbor{
+								{Identifier: "alloy-ns/alloy"},
+								{Identifier: "prometheus-ns/prometheus"},
+								{Identifier: "external-client"},
+							},
+							Egress: []v1beta1.NetworkNeighbor{
+								{Identifier: "loki-ns/loki"},
+								{Identifier: "mimir-ns/mimir"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ProcessRuntimeMetrics(profiles, networks)
+
+	// Verify profile status
+	statusMetric := &dto.Metric{}
+	ggeStatus, _ := applicationProfileStatus.GetMetricWithLabelValues("grafana", "grafana", "deployment", "completed")
+	_ = ggeStatus.Write(statusMetric)
+	assert.Equal(t, float64(1), statusMetric.Gauge.GetValue(), "Expected profile status to be 1")
+
+	// Verify syscall count for grafana container (5 syscalls)
+	syscallMetric := &dto.Metric{}
+	ggeSyscall, _ := applicationProfileSyscalls.GetMetricWithLabelValues("grafana", "grafana", "grafana")
+	_ = ggeSyscall.Write(syscallMetric)
+	assert.Equal(t, float64(5), syscallMetric.Gauge.GetValue(), "Expected 5 syscalls for grafana container")
+
+	// Verify syscall count for sidecar container (3 syscalls)
+	syscallMetric2 := &dto.Metric{}
+	ggeSyscall2, _ := applicationProfileSyscalls.GetMetricWithLabelValues("grafana", "grafana", "sidecar")
+	_ = ggeSyscall2.Write(syscallMetric2)
+	assert.Equal(t, float64(3), syscallMetric2.Gauge.GetValue(), "Expected 3 syscalls for sidecar container")
+
+	// Verify ingress connections (3)
+	ingressMetric := &dto.Metric{}
+	ggeIngress, _ := networkConnectionsTotal.GetMetricWithLabelValues("grafana", "grafana", "ingress")
+	_ = ggeIngress.Write(ingressMetric)
+	assert.Equal(t, float64(3), ingressMetric.Gauge.GetValue(), "Expected 3 ingress connections")
+
+	// Verify egress connections (2)
+	egressMetric := &dto.Metric{}
+	ggeEgress, _ := networkConnectionsTotal.GetMetricWithLabelValues("grafana", "grafana", "egress")
+	_ = ggeEgress.Write(egressMetric)
+	assert.Equal(t, float64(2), egressMetric.Gauge.GetValue(), "Expected 2 egress connections")
+}

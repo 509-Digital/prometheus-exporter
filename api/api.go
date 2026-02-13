@@ -63,3 +63,15 @@ func (sc *StorageClientImpl) GetConfigScanSummaries() (*v1beta1.ConfigurationSca
 	// ConfigScanSummaries is a virtual resource, it has to be enabled in the storage
 	return sc.clientset.SpdxV1beta1().ConfigurationScanSummaries("").List(context.Background(), metav1.ListOptions{ResourceVersion: softwarecomposition.ResourceVersionFullSpec})
 }
+
+func (sc *StorageClientImpl) GetVulnerabilityManifests() (*v1beta1.VulnerabilityManifestList, error) {
+	return sc.clientset.SpdxV1beta1().VulnerabilityManifests("").List(context.Background(), metav1.ListOptions{ResourceVersion: softwarecomposition.ResourceVersionFullSpec})
+}
+
+func (sc *StorageClientImpl) GetApplicationProfiles() (*v1beta1.ApplicationProfileList, error) {
+	return sc.clientset.SpdxV1beta1().ApplicationProfiles("").List(context.Background(), metav1.ListOptions{ResourceVersion: softwarecomposition.ResourceVersionFullSpec})
+}
+
+func (sc *StorageClientImpl) GetNetworkNeighborhoods() (*v1beta1.NetworkNeighborhoodList, error) {
+	return sc.clientset.SpdxV1beta1().NetworkNeighborhoods("").List(context.Background(), metav1.ListOptions{ResourceVersion: softwarecomposition.ResourceVersionFullSpec})
+}

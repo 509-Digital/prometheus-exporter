@@ -37,11 +37,30 @@ func main() {
 		go watchWorkloadVulnScanSummaries(storageClient)
 	}
 
-	interval := os.Getenv("PROMETHEUS_REFRESH_INTERVAL")
-	refreshInterval, err := time.ParseDuration(interval)
-	if err != nil {
-		logger.L().Warning("failed to get refresh interval, using default 120s", helpers.Error(err))
-		refreshInterval = 10 * time.Second
+	enableVulnDetail := os.Getenv("ENABLE_VULNERABILITY_DETAIL") != "false"
+	enableRuntime := os.Getenv("ENABLE_RUNTIME_METRICS") != "false"
+
+	refreshInterval := parseDurationOrDefault("PROMETHEUS_REFRESH_INTERVAL", 120*time.Second)
+
+	if enableVulnDetail {
+		vulnDetailInterval := parseDurationOrDefault("VULNERABILITY_DETAIL_REFRESH_INTERVAL", 300*time.Second)
+		logger.L().Info("vulnerability detail metrics enabled", helpers.String("interval", vulnDetailInterval.String()))
+		go func() {
+			for {
+				handleVulnDetailMetrics(storageClient)
+				time.Sleep(vulnDetailInterval)
+			}
+		}()
+	}
+
+	if enableRuntime {
+		logger.L().Info("runtime metrics enabled", helpers.String("interval", refreshInterval.String()))
+		go func() {
+			for {
+				handleRuntimeMetrics(storageClient)
+				time.Sleep(refreshInterval)
+			}
+		}()
 	}
 
 	// monitor the severities in objects (no watch available)
@@ -190,6 +209,47 @@ func handleVulnScanSummaries(storageClient *api.StorageClientImpl) {
 
 	metrics.ProcessVulnNamespaceMetrics(vulnScanSummaries)
 	metrics.ProcessVulnClusterMetrics(vulnScanSummaries)
+}
+
+func handleVulnDetailMetrics(storageClient *api.StorageClientImpl) {
+	summaries, err := storageClient.GetVulnerabilityManifestSummaries()
+	if err != nil {
+		logger.L().Warning("failed getting vulnerability manifest summaries for detail metrics", helpers.Error(err))
+		return
+	}
+	manifests, err := storageClient.GetVulnerabilityManifests()
+	if err != nil {
+		logger.L().Warning("failed getting vulnerability manifests for detail metrics", helpers.Error(err))
+		return
+	}
+	metrics.ProcessVulnDetailMetrics(summaries, manifests)
+}
+
+func handleRuntimeMetrics(storageClient *api.StorageClientImpl) {
+	profiles, err := storageClient.GetApplicationProfiles()
+	if err != nil {
+		logger.L().Warning("failed getting application profiles", helpers.Error(err))
+		return
+	}
+	networks, err := storageClient.GetNetworkNeighborhoods()
+	if err != nil {
+		logger.L().Warning("failed getting network neighborhoods", helpers.Error(err))
+		return
+	}
+	metrics.ProcessRuntimeMetrics(profiles, networks)
+}
+
+func parseDurationOrDefault(envVar string, defaultVal time.Duration) time.Duration {
+	val := os.Getenv(envVar)
+	if val == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		logger.L().Warning("failed to parse duration, using default", helpers.String("env", envVar), helpers.String("value", val), helpers.Error(err))
+		return defaultVal
+	}
+	return d
 }
 
 func InfiniteBackOff() backoff.BackOff {

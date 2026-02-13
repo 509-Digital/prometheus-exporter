@@ -242,6 +242,38 @@ var (
 		Name: "kubescape_control_score",
 		Help: "Control severity score factor (0-10)",
 	}, []string{"control_id", "severity"})
+
+	// Per-CVE vulnerability detail metrics (Tier 1)
+	vulnerabilityInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_vulnerability_info",
+		Help: "Vulnerability info per workload (value=1)",
+	}, []string{"vuln_id", "severity", "package", "installed_version", "fixed_version", "fix_state", "namespace", "workload", "workload_kind", "container", "image"})
+
+	vulnerabilityCvss = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_vulnerability_cvss",
+		Help: "Vulnerability CVSS base score",
+	}, []string{"vuln_id", "severity", "namespace", "workload"})
+
+	vulnerabilityRelevant = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_vulnerability_relevant",
+		Help: "Vulnerability runtime relevancy (1=relevant, 0=not relevant)",
+	}, []string{"vuln_id", "namespace", "workload"})
+
+	// Runtime security metrics (Tier 3)
+	applicationProfileStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_application_profile_status",
+		Help: "Application profile learning status (value=1)",
+	}, []string{"namespace", "workload", "workload_kind", "status"})
+
+	applicationProfileSyscalls = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_application_profile_syscalls",
+		Help: "Number of unique syscalls observed per container",
+	}, []string{"namespace", "workload", "container"})
+
+	networkConnectionsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_network_connections_total",
+		Help: "Number of observed network connections per workload",
+	}, []string{"namespace", "workload", "direction"})
 )
 
 func init() {
@@ -265,6 +297,16 @@ func init() {
 	if os.Getenv("ENABLE_CONTROL_DETAIL") != "false" {
 		prometheus.MustRegister(controlStatus)
 		prometheus.MustRegister(controlScore)
+	}
+	if os.Getenv("ENABLE_VULNERABILITY_DETAIL") != "false" {
+		prometheus.MustRegister(vulnerabilityInfo)
+		prometheus.MustRegister(vulnerabilityCvss)
+		prometheus.MustRegister(vulnerabilityRelevant)
+	}
+	if os.Getenv("ENABLE_RUNTIME_METRICS") != "false" {
+		prometheus.MustRegister(applicationProfileStatus)
+		prometheus.MustRegister(applicationProfileSyscalls)
+		prometheus.MustRegister(networkConnectionsTotal)
 	}
 	prometheus.MustRegister(namespaceCritical)
 	prometheus.MustRegister(namespaceHigh)
@@ -472,4 +514,132 @@ func DeleteControlDetailMetrics(item *v1beta1.WorkloadConfigurationScanSummary) 
 		"workload":      workload,
 		"workload_kind": kind,
 	})
+}
+
+// ProcessVulnDetailMetrics extracts per-CVE vulnerability data by cross-referencing
+// VulnerabilityManifestSummary (workload labels + manifest refs) with full
+// VulnerabilityManifest objects (Grype match data). The summary's vulnerabilitiesRef
+// links to separate "all" and "relevant" manifests, enabling per-CVE relevancy tagging.
+func ProcessVulnDetailMetrics(summaries *v1beta1.VulnerabilityManifestSummaryList, manifests *v1beta1.VulnerabilityManifestList) {
+	vulnerabilityInfo.Reset()
+	vulnerabilityCvss.Reset()
+	vulnerabilityRelevant.Reset()
+
+	// Build manifest lookup map keyed by "namespace/name"
+	manifestMap := make(map[string]*v1beta1.VulnerabilityManifest, len(manifests.Items))
+	for i := range manifests.Items {
+		m := &manifests.Items[i]
+		key := m.Namespace + "/" + m.Name
+		manifestMap[key] = m
+	}
+
+	for _, summary := range summaries.Items {
+		namespace := summary.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+		workload := summary.ObjectMeta.Labels["kubescape.io/workload-name"]
+		kind := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-kind"])
+		container := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-container-name"])
+
+		// Look up the "all" manifest
+		allRef := summary.Spec.Vulnerabilities.ImageVulnerabilitiesObj
+		allKey := allRef.Namespace + "/" + allRef.Name
+		allManifest, ok := manifestMap[allKey]
+		if !ok || allManifest == nil {
+			continue
+		}
+
+		// Extract image tag from manifest annotations
+		image := allManifest.Annotations["kubescape.io/image-tag"]
+
+		// Build set of relevant CVE IDs from the "relevant" manifest
+		relevantCVEs := make(map[string]struct{})
+		relRef := summary.Spec.Vulnerabilities.WorkloadVulnerabilitiesObj
+		if relRef.Name != "" {
+			relKey := relRef.Namespace + "/" + relRef.Name
+			if relManifest, found := manifestMap[relKey]; found {
+				for _, match := range relManifest.Spec.Payload.Matches {
+					relevantCVEs[match.Vulnerability.ID] = struct{}{}
+				}
+			}
+		}
+
+		// Emit metrics for each CVE in the "all" manifest
+		for _, match := range allManifest.Spec.Payload.Matches {
+			vulnID := match.Vulnerability.ID
+			severity := strings.ToLower(match.Vulnerability.Severity)
+			pkg := match.Artifact.Name
+			installedVersion := match.Artifact.Version
+			fixState := match.Vulnerability.Fix.State
+			fixVersion := ""
+			if len(match.Vulnerability.Fix.Versions) > 0 {
+				fixVersion = match.Vulnerability.Fix.Versions[0]
+			}
+
+			vulnerabilityInfo.WithLabelValues(
+				vulnID, severity, pkg, installedVersion, fixVersion, fixState,
+				namespace, workload, kind, container, image,
+			).Set(1)
+
+			// CVSS base score
+			var baseScore float64
+			if len(match.Vulnerability.Cvss) > 0 {
+				baseScore = match.Vulnerability.Cvss[0].Metrics.BaseScore
+			}
+			vulnerabilityCvss.WithLabelValues(vulnID, severity, namespace, workload).Set(baseScore)
+
+			// Relevancy
+			var relevantVal float64
+			if _, isRelevant := relevantCVEs[vulnID]; isRelevant {
+				relevantVal = 1
+			}
+			vulnerabilityRelevant.WithLabelValues(vulnID, namespace, workload).Set(relevantVal)
+		}
+	}
+}
+
+// ProcessRuntimeMetrics extracts application profile status, syscall counts,
+// and network connection counts from ApplicationProfile and NetworkNeighborhood CRDs.
+func ProcessRuntimeMetrics(profiles *v1beta1.ApplicationProfileList, networks *v1beta1.NetworkNeighborhoodList) {
+	applicationProfileStatus.Reset()
+	applicationProfileSyscalls.Reset()
+	networkConnectionsTotal.Reset()
+
+	for _, item := range profiles.Items {
+		namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+		workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
+		kind := strings.ToLower(item.ObjectMeta.Labels["kubescape.io/workload-kind"])
+
+		// Derive status from annotations
+		status := "unknown"
+		if s, ok := item.ObjectMeta.Annotations["kubescape.io/status"]; ok && s != "" {
+			status = s
+		}
+
+		applicationProfileStatus.WithLabelValues(namespace, workload, kind, status).Set(1)
+
+		// Syscall counts per container
+		for _, c := range item.Spec.Containers {
+			applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
+		}
+		for _, c := range item.Spec.InitContainers {
+			applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
+		}
+	}
+
+	for _, item := range networks.Items {
+		namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+		workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
+
+		var ingressCount, egressCount int
+		for _, c := range item.Spec.Containers {
+			ingressCount += len(c.Ingress)
+			egressCount += len(c.Egress)
+		}
+		for _, c := range item.Spec.InitContainers {
+			ingressCount += len(c.Ingress)
+			egressCount += len(c.Egress)
+		}
+
+		networkConnectionsTotal.WithLabelValues(namespace, workload, "ingress").Set(float64(ingressCount))
+		networkConnectionsTotal.WithLabelValues(namespace, workload, "egress").Set(float64(egressCount))
+	}
 }
