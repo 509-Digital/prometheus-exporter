@@ -41,8 +41,6 @@ func main() {
 
 	if enableRuntime {
 		logger.L().Info("runtime metrics enabled")
-		go watchApplicationProfiles(storageClient)
-		go watchNetworkNeighborhoods(storageClient)
 	}
 
 	refreshInterval := parseDurationOrDefault("PROMETHEUS_REFRESH_INTERVAL", 120*time.Second)
@@ -51,6 +49,10 @@ func main() {
 	for {
 		handleConfigScanSummaries(storageClient)
 		handleVulnScanSummaries(storageClient)
+
+		if enableRuntime {
+			handleRuntimeMetrics(storageClient)
+		}
 
 		time.Sleep(refreshInterval)
 	}
@@ -164,82 +166,46 @@ func watchWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl, enab
 	}
 }
 
-func watchApplicationProfiles(storageClient *api.StorageClientImpl) {
-	// No initial bulk load — List with fullSpec is rejected by the storage server.
-	// Watch delivers initial state as a burst of Added events.
-	if err := backoff.RetryNotify(func() error {
-		watcher, err := storageClient.WatchApplicationProfiles()
-		if err != nil {
-			return fmt.Errorf("creating application profile watcher: %s", err)
-		}
-		for {
-			event, chanActive := <-watcher.ResultChan()
-			if !chanActive {
-				return errWatchClosed
-			}
-			if event.Type == watch.Error {
-				return fmt.Errorf("watch error: %s", event.Object)
-			}
-			item, ok := event.Object.(*v1beta1.ApplicationProfile)
-			if !ok {
-				logger.L().Warning("received unknown object in application profile watch", helpers.Interface("object", event.Object))
-				continue
-			}
-			logger.L().Debug("received application profile event", helpers.String("type", string(event.Type)), helpers.String("name", item.Name))
-			if event.Type == watch.Added || event.Type == watch.Modified {
-				metrics.ProcessRuntimeMetricsForProfile(item)
-			}
-			if event.Type == watch.Deleted {
-				metrics.DeleteRuntimeMetricsForProfile(item)
-			}
-		}
-	}, InfiniteBackOff(), func(err error, duration time.Duration) {
-		if !errors.Is(err, errWatchClosed) {
-			logger.L().Warning("error watching application profiles", helpers.Error(err), helpers.String("retry-after", duration.String()))
-		} else {
-			logger.L().Debug("error watching application profiles", helpers.Error(err), helpers.String("retry-after", duration.String()))
-		}
-	}); err != nil {
-		logger.L().Fatal("failed watching application profiles", helpers.Error(err))
-	}
-}
+// handleRuntimeMetrics polls ApplicationProfile and NetworkNeighborhood resources.
+// List returns metadata only (spec stripped by storage server), so individual Get
+// is used for each resource to retrieve full spec with syscalls and connections.
+func handleRuntimeMetrics(storageClient *api.StorageClientImpl) {
+	metrics.ResetRuntimeMetrics()
 
-func watchNetworkNeighborhoods(storageClient *api.StorageClientImpl) {
-	// No initial bulk load — Watch delivers initial state as Added events.
-	if err := backoff.RetryNotify(func() error {
-		watcher, err := storageClient.WatchNetworkNeighborhoods()
-		if err != nil {
-			return fmt.Errorf("creating network neighborhood watcher: %s", err)
-		}
-		for {
-			event, chanActive := <-watcher.ResultChan()
-			if !chanActive {
-				return errWatchClosed
-			}
-			if event.Type == watch.Error {
-				return fmt.Errorf("watch error: %s", event.Object)
-			}
-			item, ok := event.Object.(*v1beta1.NetworkNeighborhood)
-			if !ok {
-				logger.L().Warning("received unknown object in network neighborhood watch", helpers.Interface("object", event.Object))
+	// Application Profiles
+	profiles, err := storageClient.ListApplicationProfiles()
+	if err != nil {
+		logger.L().Warning("failed listing application profiles", helpers.Error(err))
+	} else {
+		loaded := 0
+		for _, profile := range profiles.Items {
+			fullProfile, err := storageClient.GetApplicationProfile(profile.Namespace, profile.Name)
+			if err != nil {
+				logger.L().Debug("failed getting application profile", helpers.String("name", profile.Name), helpers.Error(err))
 				continue
 			}
-			logger.L().Debug("received network neighborhood event", helpers.String("type", string(event.Type)), helpers.String("name", item.Name))
-			if event.Type == watch.Added || event.Type == watch.Modified {
-				metrics.ProcessRuntimeMetricsForNetwork(item)
-			}
-			if event.Type == watch.Deleted {
-				metrics.DeleteRuntimeMetricsForNetwork(item)
-			}
+			metrics.ProcessRuntimeMetricsForProfile(fullProfile)
+			loaded++
 		}
-	}, InfiniteBackOff(), func(err error, duration time.Duration) {
-		if !errors.Is(err, errWatchClosed) {
-			logger.L().Warning("error watching network neighborhoods", helpers.Error(err), helpers.String("retry-after", duration.String()))
-		} else {
-			logger.L().Debug("error watching network neighborhoods", helpers.Error(err), helpers.String("retry-after", duration.String()))
+		logger.L().Debug("runtime profile metrics refreshed", helpers.Int("profiles", loaded))
+	}
+
+	// Network Neighborhoods
+	neighborhoods, err := storageClient.ListNetworkNeighborhoods()
+	if err != nil {
+		logger.L().Warning("failed listing network neighborhoods", helpers.Error(err))
+	} else {
+		loaded := 0
+		for _, nn := range neighborhoods.Items {
+			fullNN, err := storageClient.GetNetworkNeighborhood(nn.Namespace, nn.Name)
+			if err != nil {
+				logger.L().Debug("failed getting network neighborhood", helpers.String("name", nn.Name), helpers.Error(err))
+				continue
+			}
+			metrics.ProcessRuntimeMetricsForNetwork(fullNN)
+			loaded++
 		}
-	}); err != nil {
-		logger.L().Fatal("failed watching network neighborhoods", helpers.Error(err))
+		logger.L().Debug("runtime network metrics refreshed", helpers.Int("neighborhoods", loaded))
 	}
 }
 

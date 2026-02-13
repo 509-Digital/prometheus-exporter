@@ -601,6 +601,13 @@ func DeleteVulnDetailForSummary(summary *v1beta1.VulnerabilityManifestSummary) {
 	vulnerabilityRelevant.DeletePartialMatch(labels)
 }
 
+// ResetRuntimeMetrics clears all runtime metrics before a polling refresh cycle.
+func ResetRuntimeMetrics() {
+	applicationProfileStatus.Reset()
+	applicationProfileSyscalls.Reset()
+	networkConnectionsTotal.Reset()
+}
+
 // ProcessRuntimeMetricsForProfile processes runtime metrics for a single ApplicationProfile.
 func ProcessRuntimeMetricsForProfile(profile *v1beta1.ApplicationProfile) {
 	namespace := profile.ObjectMeta.Labels["kubescape.io/workload-namespace"]

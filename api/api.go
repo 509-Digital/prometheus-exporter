@@ -138,7 +138,7 @@ func (sc *StorageClientImpl) GetConfigScanSummaries() (*v1beta1.ConfigurationSca
 	return sc.clientset.SpdxV1beta1().ConfigurationScanSummaries("").List(context.Background(), metav1.ListOptions{ResourceVersion: softwarecomposition.ResourceVersionFullSpec})
 }
 
-// --- New methods for watch-based approach ---
+// --- New methods for enhanced metrics ---
 
 // GetVulnerabilityManifest fetches a single VulnerabilityManifest by name via individual Get.
 // All VulnerabilityManifests live in the "kubescape" namespace.
@@ -170,13 +170,27 @@ func (sc *StorageClientImpl) GetVulnerabilityManifestSummary(namespace, name str
 	return sc.clientset.SpdxV1beta1().VulnerabilityManifestSummaries(namespace).Get(context.Background(), name, metav1.GetOptions{})
 }
 
-// WatchApplicationProfiles creates a watch on all ApplicationProfile resources.
-// Watch events include full objects (unlike List with fullSpec which is rejected).
-func (sc *StorageClientImpl) WatchApplicationProfiles() (watch.Interface, error) {
-	return sc.clientset.SpdxV1beta1().ApplicationProfiles("").Watch(context.Background(), metav1.ListOptions{})
+// ListApplicationProfiles lists all ApplicationProfile resources without fullSpec.
+// Returns metadata (labels, annotations) but spec is stripped by the storage server.
+// Use GetApplicationProfile for full spec including containers and syscalls.
+func (sc *StorageClientImpl) ListApplicationProfiles() (*v1beta1.ApplicationProfileList, error) {
+	return sc.clientset.SpdxV1beta1().ApplicationProfiles("").List(context.Background(), metav1.ListOptions{})
 }
 
-// WatchNetworkNeighborhoods creates a watch on all NetworkNeighborhood resources.
-func (sc *StorageClientImpl) WatchNetworkNeighborhoods() (watch.Interface, error) {
-	return sc.clientset.SpdxV1beta1().NetworkNeighborhoods("").Watch(context.Background(), metav1.ListOptions{})
+// GetApplicationProfile fetches a single ApplicationProfile by namespace and name.
+// Individual Get returns full object including spec.containers with syscall data.
+func (sc *StorageClientImpl) GetApplicationProfile(namespace, name string) (*v1beta1.ApplicationProfile, error) {
+	return sc.clientset.SpdxV1beta1().ApplicationProfiles(namespace).Get(context.Background(), name, metav1.GetOptions{})
+}
+
+// ListNetworkNeighborhoods lists all NetworkNeighborhood resources without fullSpec.
+// Returns metadata but spec is stripped. Use GetNetworkNeighborhood for full spec.
+func (sc *StorageClientImpl) ListNetworkNeighborhoods() (*v1beta1.NetworkNeighborhoodList, error) {
+	return sc.clientset.SpdxV1beta1().NetworkNeighborhoods("").List(context.Background(), metav1.ListOptions{})
+}
+
+// GetNetworkNeighborhood fetches a single NetworkNeighborhood by namespace and name.
+// Individual Get returns full object including spec.containers with ingress/egress data.
+func (sc *StorageClientImpl) GetNetworkNeighborhood(namespace, name string) (*v1beta1.NetworkNeighborhood, error) {
+	return sc.clientset.SpdxV1beta1().NetworkNeighborhoods(namespace).Get(context.Background(), name, metav1.GetOptions{})
 }
