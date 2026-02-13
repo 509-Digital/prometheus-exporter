@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -441,134 +442,101 @@ func TestProcessConfigscanClusterMetrics(t *testing.T) {
 	assert.Equal(t, int64(7), totalUnknown)
 }
 
-func TestProcessVulnDetailMetrics(t *testing.T) {
-	// Create summaries that reference "all" and "relevant" manifests
-	summaries := &v1beta1.VulnerabilityManifestSummaryList{
-		Items: []v1beta1.VulnerabilityManifestSummary{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"kubescape.io/workload-name":           "grafana",
-						"kubescape.io/workload-kind":           "Deployment",
-						"kubescape.io/workload-namespace":      "grafana",
-						"kubescape.io/workload-container-name": "grafana",
-					},
-				},
-				Spec: v1beta1.VulnerabilityManifestSummarySpec{
-					Severities: v1beta1.SeveritySummary{
-						Critical: v1beta1.VulnerabilityCounters{All: 1, Relevant: 1},
-						High:     v1beta1.VulnerabilityCounters{All: 2, Relevant: 0},
-					},
-					Vulnerabilities: v1beta1.VulnerabilitiesComponents{
-						ImageVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
-							Namespace: "kubescape",
-							Name:      "grafana-all",
-						},
-						WorkloadVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
-							Namespace: "kubescape",
-							Name:      "grafana-relevant",
-						},
-					},
-				},
+func TestProcessVulnDetailForSummary(t *testing.T) {
+	// Create a single summary with refs to "all" and "relevant" manifests
+	summary := &v1beta1.VulnerabilityManifestSummary{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":           "grafana",
+				"kubescape.io/workload-kind":           "Deployment",
+				"kubescape.io/workload-namespace":      "grafana",
+				"kubescape.io/workload-container-name": "grafana",
 			},
 		},
-	}
-
-	// Create manifests: "all" has 3 CVEs, "relevant" has only 1
-	manifests := &v1beta1.VulnerabilityManifestList{
-		Items: []v1beta1.VulnerabilityManifest{
-			{
-				ObjectMeta: metav1.ObjectMeta{
+		Spec: v1beta1.VulnerabilityManifestSummarySpec{
+			Severities: v1beta1.SeveritySummary{
+				Critical: v1beta1.VulnerabilityCounters{All: 1, Relevant: 1},
+				High:     v1beta1.VulnerabilityCounters{All: 2, Relevant: 0},
+			},
+			Vulnerabilities: v1beta1.VulnerabilitiesComponents{
+				ImageVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
+					Namespace: "grafana", // summary refs point to workload namespace
 					Name:      "grafana-all",
-					Namespace: "kubescape",
-					Annotations: map[string]string{
-						"kubescape.io/image-tag": "grafana/grafana:10.3.1",
-					},
 				},
-				Spec: v1beta1.VulnerabilityManifestSpec{
-					Payload: v1beta1.GrypeDocument{
-						Matches: []v1beta1.Match{
-							{
-								Vulnerability: v1beta1.Vulnerability{
-									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
-										ID:       "CVE-2024-1234",
-										Severity: "Critical",
-										Cvss: []v1beta1.Cvss{
-											{Metrics: v1beta1.CvssMetrics{BaseScore: 9.8}},
-										},
-									},
-									Fix: v1beta1.Fix{
-										Versions: []string{"3.0.14"},
-										State:    "fixed",
-									},
-								},
-								Artifact: v1beta1.GrypePackage{
-									Name:    "openssl",
-									Version: "3.0.1",
-								},
-							},
-							{
-								Vulnerability: v1beta1.Vulnerability{
-									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
-										ID:       "CVE-2024-5678",
-										Severity: "High",
-										Cvss: []v1beta1.Cvss{
-											{Metrics: v1beta1.CvssMetrics{BaseScore: 7.5}},
-										},
-									},
-									Fix: v1beta1.Fix{
-										State: "not-fixed",
-									},
-								},
-								Artifact: v1beta1.GrypePackage{
-									Name:    "libcurl",
-									Version: "7.88.0",
-								},
-							},
-							{
-								Vulnerability: v1beta1.Vulnerability{
-									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
-										ID:       "CVE-2024-9999",
-										Severity: "High",
-										Cvss: []v1beta1.Cvss{
-											{Metrics: v1beta1.CvssMetrics{BaseScore: 8.1}},
-										},
-									},
-									Fix: v1beta1.Fix{
-										Versions: []string{"2.0.0"},
-										State:    "fixed",
-									},
-								},
-								Artifact: v1beta1.GrypePackage{
-									Name:    "zlib",
-									Version: "1.2.11",
-								},
-							},
-						},
-					},
+				WorkloadVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
+					Namespace: "grafana",
+					Name:      "grafana-relevant",
 				},
 			},
-			{
-				// Relevant manifest: only CVE-2024-1234 is runtime-relevant
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "grafana-relevant",
-					Namespace: "kubescape",
-				},
-				Spec: v1beta1.VulnerabilityManifestSpec{
-					Payload: v1beta1.GrypeDocument{
-						Matches: []v1beta1.Match{
-							{
-								Vulnerability: v1beta1.Vulnerability{
-									VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
-										ID:       "CVE-2024-1234",
-										Severity: "Critical",
-									},
-								},
-								Artifact: v1beta1.GrypePackage{
-									Name:    "openssl",
-									Version: "3.0.1",
+		},
+	}
+
+	// Mock manifests: "all" has 3 CVEs, "relevant" has only 1
+	allManifest := &v1beta1.VulnerabilityManifest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "grafana-all",
+			Namespace: "kubescape",
+			Annotations: map[string]string{
+				"kubescape.io/image-tag": "grafana/grafana:10.3.1",
+			},
+		},
+		Spec: v1beta1.VulnerabilityManifestSpec{
+			Payload: v1beta1.GrypeDocument{
+				Matches: []v1beta1.Match{
+					{
+						Vulnerability: v1beta1.Vulnerability{
+							VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+								ID:       "CVE-2024-1234",
+								Severity: "Critical",
+								Cvss: []v1beta1.Cvss{
+									{Metrics: v1beta1.CvssMetrics{BaseScore: 9.8}},
 								},
 							},
+							Fix: v1beta1.Fix{
+								Versions: []string{"3.0.14"},
+								State:    "fixed",
+							},
+						},
+						Artifact: v1beta1.GrypePackage{
+							Name:    "openssl",
+							Version: "3.0.1",
+						},
+					},
+					{
+						Vulnerability: v1beta1.Vulnerability{
+							VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+								ID:       "CVE-2024-5678",
+								Severity: "High",
+								Cvss: []v1beta1.Cvss{
+									{Metrics: v1beta1.CvssMetrics{BaseScore: 7.5}},
+								},
+							},
+							Fix: v1beta1.Fix{
+								State: "not-fixed",
+							},
+						},
+						Artifact: v1beta1.GrypePackage{
+							Name:    "libcurl",
+							Version: "7.88.0",
+						},
+					},
+					{
+						Vulnerability: v1beta1.Vulnerability{
+							VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+								ID:       "CVE-2024-9999",
+								Severity: "High",
+								Cvss: []v1beta1.Cvss{
+									{Metrics: v1beta1.CvssMetrics{BaseScore: 8.1}},
+								},
+							},
+							Fix: v1beta1.Fix{
+								Versions: []string{"2.0.0"},
+								State:    "fixed",
+							},
+						},
+						Artifact: v1beta1.GrypePackage{
+							Name:    "zlib",
+							Version: "1.2.11",
 						},
 					},
 				},
@@ -576,7 +544,44 @@ func TestProcessVulnDetailMetrics(t *testing.T) {
 		},
 	}
 
-	ProcessVulnDetailMetrics(summaries, manifests)
+	relevantManifest := &v1beta1.VulnerabilityManifest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "grafana-relevant",
+			Namespace: "kubescape",
+		},
+		Spec: v1beta1.VulnerabilityManifestSpec{
+			Payload: v1beta1.GrypeDocument{
+				Matches: []v1beta1.Match{
+					{
+						Vulnerability: v1beta1.Vulnerability{
+							VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+								ID:       "CVE-2024-1234",
+								Severity: "Critical",
+							},
+						},
+						Artifact: v1beta1.GrypePackage{
+							Name:    "openssl",
+							Version: "3.0.1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Mock ManifestGetter that returns manifests by name
+	mockGetter := func(namespace, name string) (*v1beta1.VulnerabilityManifest, error) {
+		switch name {
+		case "grafana-all":
+			return allManifest, nil
+		case "grafana-relevant":
+			return relevantManifest, nil
+		default:
+			return nil, fmt.Errorf("not found: %s", name)
+		}
+	}
+
+	ProcessVulnDetailForSummary(summary, mockGetter)
 
 	// Verify CVE-2024-1234 info metric
 	infoMetric := &dto.Metric{}
@@ -627,66 +632,106 @@ func TestProcessVulnDetailMetrics(t *testing.T) {
 	assert.Equal(t, float64(1), noFixMetric.Gauge.GetValue(), "Expected vulnerability_info for unfixed CVE")
 }
 
-func TestProcessRuntimeMetrics(t *testing.T) {
-	profiles := &v1beta1.ApplicationProfileList{
-		Items: []v1beta1.ApplicationProfile{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"kubescape.io/workload-name":      "grafana",
-						"kubescape.io/workload-kind":      "Deployment",
-						"kubescape.io/workload-namespace": "grafana",
-					},
-					Annotations: map[string]string{
-						"kubescape.io/status": "completed",
-					},
+func TestDeleteVulnDetailForSummary(t *testing.T) {
+	// First add some vuln detail metrics
+	summary := &v1beta1.VulnerabilityManifestSummary{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":           "test-vuln-delete",
+				"kubescape.io/workload-kind":           "Deployment",
+				"kubescape.io/workload-namespace":      "test-vuln-ns",
+				"kubescape.io/workload-container-name": "app",
+			},
+		},
+		Spec: v1beta1.VulnerabilityManifestSummarySpec{
+			Vulnerabilities: v1beta1.VulnerabilitiesComponents{
+				ImageVulnerabilitiesObj: v1beta1.VulnerabilitiesObjScope{
+					Namespace: "test-vuln-ns",
+					Name:      "test-vuln-delete-all",
 				},
-				Spec: v1beta1.ApplicationProfileSpec{
-					Containers: []v1beta1.ApplicationProfileContainer{
-						{
-							Name:     "grafana",
-							Syscalls: []string{"read", "write", "openat", "close", "mmap"},
+			},
+		},
+	}
+
+	manifest := &v1beta1.VulnerabilityManifest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-vuln-delete-all",
+			Namespace:   "kubescape",
+			Annotations: map[string]string{"kubescape.io/image-tag": "test:1.0"},
+		},
+		Spec: v1beta1.VulnerabilityManifestSpec{
+			Payload: v1beta1.GrypeDocument{
+				Matches: []v1beta1.Match{
+					{
+						Vulnerability: v1beta1.Vulnerability{
+							VulnerabilityMetadata: v1beta1.VulnerabilityMetadata{
+								ID: "CVE-2024-DELETE", Severity: "High",
+								Cvss: []v1beta1.Cvss{{Metrics: v1beta1.CvssMetrics{BaseScore: 7.0}}},
+							},
+							Fix: v1beta1.Fix{State: "fixed", Versions: []string{"2.0"}},
 						},
-						{
-							Name:     "sidecar",
-							Syscalls: []string{"read", "write", "epoll_wait"},
-						},
+						Artifact: v1beta1.GrypePackage{Name: "test-pkg", Version: "1.0"},
 					},
 				},
 			},
 		},
 	}
 
-	networks := &v1beta1.NetworkNeighborhoodList{
-		Items: []v1beta1.NetworkNeighborhood{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"kubescape.io/workload-name":      "grafana",
-						"kubescape.io/workload-namespace": "grafana",
-					},
+	mockGetter := func(namespace, name string) (*v1beta1.VulnerabilityManifest, error) {
+		return manifest, nil
+	}
+
+	ProcessVulnDetailForSummary(summary, mockGetter)
+
+	// Verify metric exists
+	gge, _ := vulnerabilityInfo.GetMetricWithLabelValues(
+		"CVE-2024-DELETE", "high", "test-pkg", "1.0", "2.0", "fixed",
+		"test-vuln-ns", "test-vuln-delete", "deployment", "app", "test:1.0",
+	)
+	m := &dto.Metric{}
+	_ = gge.Write(m)
+	assert.Equal(t, float64(1), m.Gauge.GetValue())
+
+	// Delete
+	DeleteVulnDetailForSummary(summary)
+
+	// After delete, metric should be zero
+	gge2, _ := vulnerabilityInfo.GetMetricWithLabelValues(
+		"CVE-2024-DELETE", "high", "test-pkg", "1.0", "2.0", "fixed",
+		"test-vuln-ns", "test-vuln-delete", "deployment", "app", "test:1.0",
+	)
+	m2 := &dto.Metric{}
+	_ = gge2.Write(m2)
+	assert.Equal(t, float64(0), m2.Gauge.GetValue(), "Expected metric to be reset after delete")
+}
+
+func TestProcessRuntimeMetricsForProfile(t *testing.T) {
+	profile := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":      "grafana",
+				"kubescape.io/workload-kind":      "Deployment",
+				"kubescape.io/workload-namespace": "grafana",
+			},
+			Annotations: map[string]string{
+				"kubescape.io/status": "completed",
+			},
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:     "grafana",
+					Syscalls: []string{"read", "write", "openat", "close", "mmap"},
 				},
-				Spec: v1beta1.NetworkNeighborhoodSpec{
-					Containers: []v1beta1.NetworkNeighborhoodContainer{
-						{
-							Name: "grafana",
-							Ingress: []v1beta1.NetworkNeighbor{
-								{Identifier: "alloy-ns/alloy"},
-								{Identifier: "prometheus-ns/prometheus"},
-								{Identifier: "external-client"},
-							},
-							Egress: []v1beta1.NetworkNeighbor{
-								{Identifier: "loki-ns/loki"},
-								{Identifier: "mimir-ns/mimir"},
-							},
-						},
-					},
+				{
+					Name:     "sidecar",
+					Syscalls: []string{"read", "write", "epoll_wait"},
 				},
 			},
 		},
 	}
 
-	ProcessRuntimeMetrics(profiles, networks)
+	ProcessRuntimeMetricsForProfile(profile)
 
 	// Verify profile status
 	statusMetric := &dto.Metric{}
@@ -705,6 +750,72 @@ func TestProcessRuntimeMetrics(t *testing.T) {
 	ggeSyscall2, _ := applicationProfileSyscalls.GetMetricWithLabelValues("grafana", "grafana", "sidecar")
 	_ = ggeSyscall2.Write(syscallMetric2)
 	assert.Equal(t, float64(3), syscallMetric2.Gauge.GetValue(), "Expected 3 syscalls for sidecar container")
+}
+
+func TestDeleteRuntimeMetricsForProfile(t *testing.T) {
+	profile := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":      "test-profile-del",
+				"kubescape.io/workload-kind":      "Deployment",
+				"kubescape.io/workload-namespace": "test-profile-ns",
+			},
+			Annotations: map[string]string{
+				"kubescape.io/status": "completed",
+			},
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{Name: "app", Syscalls: []string{"read", "write"}},
+			},
+		},
+	}
+
+	ProcessRuntimeMetricsForProfile(profile)
+
+	// Verify metric exists
+	gge, _ := applicationProfileStatus.GetMetricWithLabelValues("test-profile-ns", "test-profile-del", "deployment", "completed")
+	m := &dto.Metric{}
+	_ = gge.Write(m)
+	assert.Equal(t, float64(1), m.Gauge.GetValue())
+
+	// Delete
+	DeleteRuntimeMetricsForProfile(profile)
+
+	// After delete
+	gge2, _ := applicationProfileStatus.GetMetricWithLabelValues("test-profile-ns", "test-profile-del", "deployment", "completed")
+	m2 := &dto.Metric{}
+	_ = gge2.Write(m2)
+	assert.Equal(t, float64(0), m2.Gauge.GetValue(), "Expected metric to be reset after delete")
+}
+
+func TestProcessRuntimeMetricsForNetwork(t *testing.T) {
+	network := &v1beta1.NetworkNeighborhood{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":      "grafana",
+				"kubescape.io/workload-namespace": "grafana",
+			},
+		},
+		Spec: v1beta1.NetworkNeighborhoodSpec{
+			Containers: []v1beta1.NetworkNeighborhoodContainer{
+				{
+					Name: "grafana",
+					Ingress: []v1beta1.NetworkNeighbor{
+						{Identifier: "alloy-ns/alloy"},
+						{Identifier: "prometheus-ns/prometheus"},
+						{Identifier: "external-client"},
+					},
+					Egress: []v1beta1.NetworkNeighbor{
+						{Identifier: "loki-ns/loki"},
+						{Identifier: "mimir-ns/mimir"},
+					},
+				},
+			},
+		},
+	}
+
+	ProcessRuntimeMetricsForNetwork(network)
 
 	// Verify ingress connections (3)
 	ingressMetric := &dto.Metric{}
@@ -717,4 +828,41 @@ func TestProcessRuntimeMetrics(t *testing.T) {
 	ggeEgress, _ := networkConnectionsTotal.GetMetricWithLabelValues("grafana", "grafana", "egress")
 	_ = ggeEgress.Write(egressMetric)
 	assert.Equal(t, float64(2), egressMetric.Gauge.GetValue(), "Expected 2 egress connections")
+}
+
+func TestDeleteRuntimeMetricsForNetwork(t *testing.T) {
+	network := &v1beta1.NetworkNeighborhood{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"kubescape.io/workload-name":      "test-net-del",
+				"kubescape.io/workload-namespace": "test-net-ns",
+			},
+		},
+		Spec: v1beta1.NetworkNeighborhoodSpec{
+			Containers: []v1beta1.NetworkNeighborhoodContainer{
+				{
+					Name:    "app",
+					Ingress: []v1beta1.NetworkNeighbor{{Identifier: "x/y"}},
+					Egress:  []v1beta1.NetworkNeighbor{{Identifier: "a/b"}},
+				},
+			},
+		},
+	}
+
+	ProcessRuntimeMetricsForNetwork(network)
+
+	// Verify metric exists
+	gge, _ := networkConnectionsTotal.GetMetricWithLabelValues("test-net-ns", "test-net-del", "ingress")
+	m := &dto.Metric{}
+	_ = gge.Write(m)
+	assert.Equal(t, float64(1), m.Gauge.GetValue())
+
+	// Delete
+	DeleteRuntimeMetricsForNetwork(network)
+
+	// After delete
+	gge2, _ := networkConnectionsTotal.GetMetricWithLabelValues("test-net-ns", "test-net-del", "ingress")
+	m2 := &dto.Metric{}
+	_ = gge2.Write(m2)
+	assert.Equal(t, float64(0), m2.Gauge.GetValue(), "Expected metric to be reset after delete")
 }

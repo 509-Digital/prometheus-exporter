@@ -516,130 +516,153 @@ func DeleteControlDetailMetrics(item *v1beta1.WorkloadConfigurationScanSummary) 
 	})
 }
 
-// ProcessVulnDetailMetrics extracts per-CVE vulnerability data by cross-referencing
-// VulnerabilityManifestSummary (workload labels + manifest refs) with full
-// VulnerabilityManifest objects (Grype match data). The summary's vulnerabilitiesRef
-// links to separate "all" and "relevant" manifests, enabling per-CVE relevancy tagging.
-func ProcessVulnDetailMetrics(summaries *v1beta1.VulnerabilityManifestSummaryList, manifests *v1beta1.VulnerabilityManifestList) {
-	vulnerabilityInfo.Reset()
-	vulnerabilityCvss.Reset()
-	vulnerabilityRelevant.Reset()
+// ManifestGetter is a function that retrieves a VulnerabilityManifest by namespace and name.
+// Used to decouple metrics processing from the API client, enabling unit tests with mock getters.
+type ManifestGetter func(namespace, name string) (*v1beta1.VulnerabilityManifest, error)
 
-	// Build manifest lookup map keyed by "namespace/name"
-	manifestMap := make(map[string]*v1beta1.VulnerabilityManifest, len(manifests.Items))
-	for i := range manifests.Items {
-		m := &manifests.Items[i]
-		key := m.Namespace + "/" + m.Name
-		manifestMap[key] = m
+// ProcessVulnDetailForSummary processes per-CVE vulnerability metrics for a single
+// VulnerabilityManifestSummary. It uses the summary's vulnerabilitiesRef to fetch
+// the "all" and "relevant" manifests via getManifest (which should be cache-backed).
+func ProcessVulnDetailForSummary(summary *v1beta1.VulnerabilityManifestSummary, getManifest ManifestGetter) {
+	namespace := summary.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := summary.ObjectMeta.Labels["kubescape.io/workload-name"]
+	kind := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-kind"])
+	container := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-container-name"])
+
+	// Look up the "all" manifest via its ref
+	allRef := summary.Spec.Vulnerabilities.ImageVulnerabilitiesObj
+	if allRef.Name == "" {
+		return
+	}
+	allManifest, err := getManifest(allRef.Namespace, allRef.Name)
+	if err != nil || allManifest == nil {
+		return
 	}
 
-	for _, summary := range summaries.Items {
-		namespace := summary.ObjectMeta.Labels["kubescape.io/workload-namespace"]
-		workload := summary.ObjectMeta.Labels["kubescape.io/workload-name"]
-		kind := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-kind"])
-		container := strings.ToLower(summary.ObjectMeta.Labels["kubescape.io/workload-container-name"])
+	// Extract image tag from manifest annotations
+	image := allManifest.Annotations["kubescape.io/image-tag"]
 
-		// Look up the "all" manifest
-		allRef := summary.Spec.Vulnerabilities.ImageVulnerabilitiesObj
-		allKey := allRef.Namespace + "/" + allRef.Name
-		allManifest, ok := manifestMap[allKey]
-		if !ok || allManifest == nil {
-			continue
-		}
-
-		// Extract image tag from manifest annotations
-		image := allManifest.Annotations["kubescape.io/image-tag"]
-
-		// Build set of relevant CVE IDs from the "relevant" manifest
-		relevantCVEs := make(map[string]struct{})
-		relRef := summary.Spec.Vulnerabilities.WorkloadVulnerabilitiesObj
-		if relRef.Name != "" {
-			relKey := relRef.Namespace + "/" + relRef.Name
-			if relManifest, found := manifestMap[relKey]; found {
-				for _, match := range relManifest.Spec.Payload.Matches {
-					relevantCVEs[match.Vulnerability.ID] = struct{}{}
-				}
+	// Build set of relevant CVE IDs from the "relevant" manifest
+	relevantCVEs := make(map[string]struct{})
+	relRef := summary.Spec.Vulnerabilities.WorkloadVulnerabilitiesObj
+	if relRef.Name != "" {
+		if relManifest, err := getManifest(relRef.Namespace, relRef.Name); err == nil && relManifest != nil {
+			for _, match := range relManifest.Spec.Payload.Matches {
+				relevantCVEs[match.Vulnerability.ID] = struct{}{}
 			}
 		}
+	}
 
-		// Emit metrics for each CVE in the "all" manifest
-		for _, match := range allManifest.Spec.Payload.Matches {
-			vulnID := match.Vulnerability.ID
-			severity := strings.ToLower(match.Vulnerability.Severity)
-			pkg := match.Artifact.Name
-			installedVersion := match.Artifact.Version
-			fixState := match.Vulnerability.Fix.State
-			fixVersion := ""
-			if len(match.Vulnerability.Fix.Versions) > 0 {
-				fixVersion = match.Vulnerability.Fix.Versions[0]
-			}
-
-			vulnerabilityInfo.WithLabelValues(
-				vulnID, severity, pkg, installedVersion, fixVersion, fixState,
-				namespace, workload, kind, container, image,
-			).Set(1)
-
-			// CVSS base score
-			var baseScore float64
-			if len(match.Vulnerability.Cvss) > 0 {
-				baseScore = match.Vulnerability.Cvss[0].Metrics.BaseScore
-			}
-			vulnerabilityCvss.WithLabelValues(vulnID, severity, namespace, workload).Set(baseScore)
-
-			// Relevancy
-			var relevantVal float64
-			if _, isRelevant := relevantCVEs[vulnID]; isRelevant {
-				relevantVal = 1
-			}
-			vulnerabilityRelevant.WithLabelValues(vulnID, namespace, workload).Set(relevantVal)
+	// Emit metrics for each CVE in the "all" manifest
+	for _, match := range allManifest.Spec.Payload.Matches {
+		vulnID := match.Vulnerability.ID
+		severity := strings.ToLower(match.Vulnerability.Severity)
+		pkg := match.Artifact.Name
+		installedVersion := match.Artifact.Version
+		fixState := match.Vulnerability.Fix.State
+		fixVersion := ""
+		if len(match.Vulnerability.Fix.Versions) > 0 {
+			fixVersion = match.Vulnerability.Fix.Versions[0]
 		}
+
+		vulnerabilityInfo.WithLabelValues(
+			vulnID, severity, pkg, installedVersion, fixVersion, fixState,
+			namespace, workload, kind, container, image,
+		).Set(1)
+
+		// CVSS base score
+		var baseScore float64
+		if len(match.Vulnerability.Cvss) > 0 {
+			baseScore = match.Vulnerability.Cvss[0].Metrics.BaseScore
+		}
+		vulnerabilityCvss.WithLabelValues(vulnID, severity, namespace, workload).Set(baseScore)
+
+		// Relevancy
+		var relevantVal float64
+		if _, isRelevant := relevantCVEs[vulnID]; isRelevant {
+			relevantVal = 1
+		}
+		vulnerabilityRelevant.WithLabelValues(vulnID, namespace, workload).Set(relevantVal)
 	}
 }
 
-// ProcessRuntimeMetrics extracts application profile status, syscall counts,
-// and network connection counts from ApplicationProfile and NetworkNeighborhood CRDs.
-func ProcessRuntimeMetrics(profiles *v1beta1.ApplicationProfileList, networks *v1beta1.NetworkNeighborhoodList) {
-	applicationProfileStatus.Reset()
-	applicationProfileSyscalls.Reset()
-	networkConnectionsTotal.Reset()
+// DeleteVulnDetailForSummary removes all per-CVE metrics for a workload
+// using partial label match on namespace and workload.
+func DeleteVulnDetailForSummary(summary *v1beta1.VulnerabilityManifestSummary) {
+	namespace := summary.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := summary.ObjectMeta.Labels["kubescape.io/workload-name"]
 
-	for _, item := range profiles.Items {
-		namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
-		workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
-		kind := strings.ToLower(item.ObjectMeta.Labels["kubescape.io/workload-kind"])
+	labels := prometheus.Labels{
+		"namespace": namespace,
+		"workload":  workload,
+	}
+	vulnerabilityInfo.DeletePartialMatch(labels)
+	vulnerabilityCvss.DeletePartialMatch(labels)
+	vulnerabilityRelevant.DeletePartialMatch(labels)
+}
 
-		// Derive status from annotations
-		status := "unknown"
-		if s, ok := item.ObjectMeta.Annotations["kubescape.io/status"]; ok && s != "" {
-			status = s
-		}
+// ProcessRuntimeMetricsForProfile processes runtime metrics for a single ApplicationProfile.
+func ProcessRuntimeMetricsForProfile(profile *v1beta1.ApplicationProfile) {
+	namespace := profile.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := profile.ObjectMeta.Labels["kubescape.io/workload-name"]
+	kind := strings.ToLower(profile.ObjectMeta.Labels["kubescape.io/workload-kind"])
 
-		applicationProfileStatus.WithLabelValues(namespace, workload, kind, status).Set(1)
-
-		// Syscall counts per container
-		for _, c := range item.Spec.Containers {
-			applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
-		}
-		for _, c := range item.Spec.InitContainers {
-			applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
-		}
+	// Derive status from annotations
+	status := "unknown"
+	if s, ok := profile.ObjectMeta.Annotations["kubescape.io/status"]; ok && s != "" {
+		status = s
 	}
 
-	for _, item := range networks.Items {
-		namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
-		workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
+	applicationProfileStatus.WithLabelValues(namespace, workload, kind, status).Set(1)
 
-		var ingressCount, egressCount int
-		for _, c := range item.Spec.Containers {
-			ingressCount += len(c.Ingress)
-			egressCount += len(c.Egress)
-		}
-		for _, c := range item.Spec.InitContainers {
-			ingressCount += len(c.Ingress)
-			egressCount += len(c.Egress)
-		}
-
-		networkConnectionsTotal.WithLabelValues(namespace, workload, "ingress").Set(float64(ingressCount))
-		networkConnectionsTotal.WithLabelValues(namespace, workload, "egress").Set(float64(egressCount))
+	// Syscall counts per container
+	for _, c := range profile.Spec.Containers {
+		applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
 	}
+	for _, c := range profile.Spec.InitContainers {
+		applicationProfileSyscalls.WithLabelValues(namespace, workload, c.Name).Set(float64(len(c.Syscalls)))
+	}
+}
+
+// DeleteRuntimeMetricsForProfile removes all runtime metrics for an ApplicationProfile's workload.
+func DeleteRuntimeMetricsForProfile(profile *v1beta1.ApplicationProfile) {
+	namespace := profile.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := profile.ObjectMeta.Labels["kubescape.io/workload-name"]
+
+	labels := prometheus.Labels{
+		"namespace": namespace,
+		"workload":  workload,
+	}
+	applicationProfileStatus.DeletePartialMatch(labels)
+	applicationProfileSyscalls.DeletePartialMatch(labels)
+}
+
+// ProcessRuntimeMetricsForNetwork processes runtime metrics for a single NetworkNeighborhood.
+func ProcessRuntimeMetricsForNetwork(network *v1beta1.NetworkNeighborhood) {
+	namespace := network.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := network.ObjectMeta.Labels["kubescape.io/workload-name"]
+
+	var ingressCount, egressCount int
+	for _, c := range network.Spec.Containers {
+		ingressCount += len(c.Ingress)
+		egressCount += len(c.Egress)
+	}
+	for _, c := range network.Spec.InitContainers {
+		ingressCount += len(c.Ingress)
+		egressCount += len(c.Egress)
+	}
+
+	networkConnectionsTotal.WithLabelValues(namespace, workload, "ingress").Set(float64(ingressCount))
+	networkConnectionsTotal.WithLabelValues(namespace, workload, "egress").Set(float64(egressCount))
+}
+
+// DeleteRuntimeMetricsForNetwork removes all network connection metrics for a NetworkNeighborhood's workload.
+func DeleteRuntimeMetricsForNetwork(network *v1beta1.NetworkNeighborhood) {
+	namespace := network.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := network.ObjectMeta.Labels["kubescape.io/workload-name"]
+
+	networkConnectionsTotal.DeletePartialMatch(prometheus.Labels{
+		"namespace": namespace,
+		"workload":  workload,
+	})
 }
