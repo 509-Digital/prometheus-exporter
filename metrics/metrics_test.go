@@ -256,6 +256,142 @@ func TestProcessConfigscanWorkloadMetrics(t *testing.T) {
 	assert.Equal(t, float64(7), unknown.Gauge.GetValue(), "Expected allUnknown to be 7")
 }
 
+func TestProcessControlDetailMetrics(t *testing.T) {
+	summary := &v1beta1.WorkloadConfigurationScanSummaryList{
+		Items: []v1beta1.WorkloadConfigurationScanSummary{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"kubescape.io/workload-name":      "grafana",
+						"kubescape.io/workload-kind":      "Deployment",
+						"kubescape.io/workload-namespace": "grafana",
+					},
+				},
+				Spec: v1beta1.WorkloadConfigurationScanSummarySpec{
+					Severities: v1beta1.WorkloadConfigurationScanSeveritiesSummary{
+						Critical: 0,
+						High:     2,
+						Medium:   1,
+					},
+					Controls: map[string]v1beta1.ScannedControlSummary{
+						"C-0211": {
+							ControlID: "C-0211",
+							Severity: v1beta1.ControlSeverity{
+								Severity:    "High",
+								ScoreFactor: 8,
+							},
+							Status: v1beta1.ScannedControlStatus{
+								Status: "failed",
+							},
+						},
+						"C-0017": {
+							ControlID: "C-0017",
+							Severity: v1beta1.ControlSeverity{
+								Severity:    "Low",
+								ScoreFactor: 3,
+							},
+							Status: v1beta1.ScannedControlStatus{
+								Status: "passed",
+							},
+						},
+						"C-0030": {
+							ControlID: "C-0030",
+							Severity: v1beta1.ControlSeverity{
+								Severity:    "Medium",
+								ScoreFactor: 5,
+							},
+							Status: v1beta1.ScannedControlStatus{
+								Status: "failed",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ProcessControlDetailMetrics(summary)
+
+	// Verify C-0211 is failed (value=1)
+	statusMetric := &dto.Metric{}
+	ggeStatus, _ := controlStatus.GetMetricWithLabelValues("grafana", "grafana", "deployment", "C-0211", "high")
+	_ = ggeStatus.Write(statusMetric)
+	assert.Equal(t, float64(1), statusMetric.Gauge.GetValue(), "Expected C-0211 status to be 1 (failed)")
+
+	// Verify C-0017 is passed (value=0)
+	passedMetric := &dto.Metric{}
+	ggePassed, _ := controlStatus.GetMetricWithLabelValues("grafana", "grafana", "deployment", "C-0017", "low")
+	_ = ggePassed.Write(passedMetric)
+	assert.Equal(t, float64(0), passedMetric.Gauge.GetValue(), "Expected C-0017 status to be 0 (passed)")
+
+	// Verify C-0030 is failed (value=1)
+	failedMetric := &dto.Metric{}
+	ggeFailed, _ := controlStatus.GetMetricWithLabelValues("grafana", "grafana", "deployment", "C-0030", "medium")
+	_ = ggeFailed.Write(failedMetric)
+	assert.Equal(t, float64(1), failedMetric.Gauge.GetValue(), "Expected C-0030 status to be 1 (failed)")
+
+	// Verify control score for C-0211
+	scoreMetric := &dto.Metric{}
+	ggeScore, _ := controlScore.GetMetricWithLabelValues("C-0211", "high")
+	_ = ggeScore.Write(scoreMetric)
+	assert.Equal(t, float64(8), scoreMetric.Gauge.GetValue(), "Expected C-0211 score to be 8")
+
+	// Verify control score for C-0017
+	scoreMetric2 := &dto.Metric{}
+	ggeScore2, _ := controlScore.GetMetricWithLabelValues("C-0017", "low")
+	_ = ggeScore2.Write(scoreMetric2)
+	assert.Equal(t, float64(3), scoreMetric2.Gauge.GetValue(), "Expected C-0017 score to be 3")
+}
+
+func TestDeleteControlDetailMetrics(t *testing.T) {
+	// First add some metrics
+	summary := &v1beta1.WorkloadConfigurationScanSummaryList{
+		Items: []v1beta1.WorkloadConfigurationScanSummary{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"kubescape.io/workload-name":      "test-delete",
+						"kubescape.io/workload-kind":      "Deployment",
+						"kubescape.io/workload-namespace": "test-ns",
+					},
+				},
+				Spec: v1beta1.WorkloadConfigurationScanSummarySpec{
+					Controls: map[string]v1beta1.ScannedControlSummary{
+						"C-0100": {
+							ControlID: "C-0100",
+							Severity: v1beta1.ControlSeverity{
+								Severity:    "High",
+								ScoreFactor: 7,
+							},
+							Status: v1beta1.ScannedControlStatus{
+								Status: "failed",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ProcessControlDetailMetrics(summary)
+
+	// Verify metric exists
+	gge, err := controlStatus.GetMetricWithLabelValues("test-ns", "test-delete", "deployment", "C-0100", "high")
+	assert.NoError(t, err)
+	m := &dto.Metric{}
+	_ = gge.Write(m)
+	assert.Equal(t, float64(1), m.Gauge.GetValue())
+
+	// Delete metrics for this workload
+	DeleteControlDetailMetrics(&summary.Items[0])
+
+	// After delete, getting the metric should return a fresh zero-value gauge
+	gge2, _ := controlStatus.GetMetricWithLabelValues("test-ns", "test-delete", "deployment", "C-0100", "high")
+	m2 := &dto.Metric{}
+	_ = gge2.Write(m2)
+	assert.Equal(t, float64(0), m2.Gauge.GetValue(), "Expected metric to be reset after delete")
+}
+
 func TestProcessConfigscanClusterMetrics(t *testing.T) {
 
 	csSummary := &v1beta1.ConfigurationScanSummaryList{

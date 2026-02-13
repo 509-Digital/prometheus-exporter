@@ -231,6 +231,17 @@ var (
 		Name: "kubescape_vulnerabilities_relevant_cluster_unknown",
 		Help: "Number of relevant unknown vulnerabilities in the cluster",
 	})
+
+	// Per-control detail metrics (Tier 2)
+	controlStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_control_status",
+		Help: "Control compliance status per workload (1=failed, 0=passed)",
+	}, []string{"namespace", "workload", "workload_kind", "control_id", "severity"})
+
+	controlScore = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kubescape_control_score",
+		Help: "Control severity score factor (0-10)",
+	}, []string{"control_id", "severity"})
 )
 
 func init() {
@@ -250,6 +261,10 @@ func init() {
 		prometheus.MustRegister(workloadVulnMediumRelevant)
 		prometheus.MustRegister(workloadVulnLowRelevant)
 		prometheus.MustRegister(workloadVulnUnknownRelevant)
+	}
+	if os.Getenv("ENABLE_CONTROL_DETAIL") != "false" {
+		prometheus.MustRegister(controlStatus)
+		prometheus.MustRegister(controlScore)
 	}
 	prometheus.MustRegister(namespaceCritical)
 	prometheus.MustRegister(namespaceHigh)
@@ -421,4 +436,40 @@ func ProcessVulnClusterMetrics(summary *v1beta1.VulnerabilitySummaryList) (total
 	clusterVulnUnknownRelevant.Set(float64(relevantUnknown))
 
 	return totalCritical, totalHigh, totalMedium, totalLow, totalUnknown, relevantCritical, relevantHigh, relevantMedium, relevantLow, relevantUnknown
+}
+
+// ProcessControlDetailMetrics extracts per-control pass/fail status from the
+// Controls map in WorkloadConfigurationScanSummary objects. This provides
+// granular visibility into which specific security controls are failing on
+// which workloads, enabling drill-down dashboards in Grafana.
+func ProcessControlDetailMetrics(summary *v1beta1.WorkloadConfigurationScanSummaryList) {
+	for _, item := range summary.Items {
+		namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+		workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
+		kind := strings.ToLower(item.ObjectMeta.Labels["kubescape.io/workload-kind"])
+
+		for _, ctrl := range item.Spec.Controls {
+			severity := strings.ToLower(ctrl.Severity.Severity)
+			var statusVal float64
+			if ctrl.Status.Status == "failed" {
+				statusVal = 1
+			}
+			controlStatus.WithLabelValues(namespace, workload, kind, ctrl.ControlID, severity).Set(statusVal)
+			controlScore.WithLabelValues(ctrl.ControlID, severity).Set(float64(ctrl.Severity.ScoreFactor))
+		}
+	}
+}
+
+// DeleteControlDetailMetrics removes all per-control metrics for a workload
+// using partial label match on namespace, workload, and kind.
+func DeleteControlDetailMetrics(item *v1beta1.WorkloadConfigurationScanSummary) {
+	namespace := item.ObjectMeta.Labels["kubescape.io/workload-namespace"]
+	workload := item.ObjectMeta.Labels["kubescape.io/workload-name"]
+	kind := strings.ToLower(item.ObjectMeta.Labels["kubescape.io/workload-kind"])
+
+	controlStatus.DeletePartialMatch(prometheus.Labels{
+		"namespace":     namespace,
+		"workload":      workload,
+		"workload_kind": kind,
+	})
 }

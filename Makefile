@@ -1,8 +1,8 @@
 DOCKERFILE_PATH=./build/Dockerfile
 BINARY_NAME=prometheus-exporter
 
-IMAGE?=quay.io/kubescae/$(BINARY_NAME)
-TAG=v0.0.0
+IMAGE?=harbor.509.digital/security/$(BINARY_NAME)
+TAG?=latest
 
 
 build:

@@ -30,8 +30,10 @@ func main() {
 		logger.L().Fatal(http.ListenAndServe(":8080", nil).Error())
 	}()
 
-	if os.Getenv("ENABLE_WORKLOAD_METRICS") == "true" {
-		go watchWorkloadConfigScanSummaries(storageClient)
+	enableControlDetail := os.Getenv("ENABLE_CONTROL_DETAIL") != "false"
+
+	if os.Getenv("ENABLE_WORKLOAD_METRICS") == "true" || enableControlDetail {
+		go watchWorkloadConfigScanSummaries(storageClient, enableControlDetail)
 		go watchWorkloadVulnScanSummaries(storageClient)
 	}
 
@@ -96,9 +98,9 @@ func watchWorkloadVulnScanSummaries(storageClient *api.StorageClientImpl) {
 	}
 }
 
-func watchWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl) {
+func watchWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl, enableControlDetail bool) {
 	// insert the existing items
-	handleWorkloadConfigScanSummaries(storageClient)
+	handleWorkloadConfigScanSummaries(storageClient, enableControlDetail)
 	// watch for new items
 	if err := backoff.RetryNotify(func() error {
 		watcher, err := storageClient.WatchWorkloadConfigurationScanSummaries()
@@ -119,14 +121,21 @@ func watchWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl) {
 				continue
 			}
 			logger.L().Debug("received event", helpers.Interface("event", event), helpers.String("name", item.Name))
+			summaryList := &v1beta1.WorkloadConfigurationScanSummaryList{
+				Items: []v1beta1.WorkloadConfigurationScanSummary{*item},
+			}
 			if event.Type == watch.Added || event.Type == watch.Modified {
-				metrics.ProcessConfigscanWorkloadMetrics(&v1beta1.WorkloadConfigurationScanSummaryList{
-					Items: []v1beta1.WorkloadConfigurationScanSummary{*item},
-				})
+				metrics.ProcessConfigscanWorkloadMetrics(summaryList)
+				if enableControlDetail {
+					metrics.ProcessControlDetailMetrics(summaryList)
+				}
 			}
 
 			if event.Type == watch.Deleted {
 				metrics.DeleteConfigscanWorkloadMetric(item)
+				if enableControlDetail {
+					metrics.DeleteControlDetailMetrics(item)
+				}
 			}
 		}
 	}, InfiniteBackOff(), func(err error, duration time.Duration) {
@@ -140,13 +149,16 @@ func watchWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl) {
 	}
 }
 
-func handleWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl) {
+func handleWorkloadConfigScanSummaries(storageClient *api.StorageClientImpl, enableControlDetail bool) {
 	workloadConfigurationScanSummaries, err := storageClient.GetWorkloadConfigurationScanSummaries()
 	if err != nil {
 		logger.L().Warning("failed getting workload configuration scan summaries", helpers.Error(err))
 		return
 	}
 	metrics.ProcessConfigscanWorkloadMetrics(workloadConfigurationScanSummaries)
+	if enableControlDetail {
+		metrics.ProcessControlDetailMetrics(workloadConfigurationScanSummaries)
+	}
 }
 
 func handleConfigScanSummaries(storageClient *api.StorageClientImpl) {
