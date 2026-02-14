@@ -1,7 +1,7 @@
 KUBECONFIG
 
-# Built Binary File
-prometheus-exporter
+# Built Binary File (anchored to root so builds/prometheus-exporter/ is not ignored)
+/prometheus-exporter
 
 # Data stored by Grafana
 data
