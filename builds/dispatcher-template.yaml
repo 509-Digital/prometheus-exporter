@@ -1,0 +1,131 @@
+# prometheus-exporter build dispatcher
+# Clones the prometheus-exporter repo, detects changes, and submits build workflows
+#
+# Triggered by the prometheus-exporter-build Sensor on pushes to main
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: prometheus-exporter-build-dispatcher
+  namespace: argo
+spec:
+  # Disable Linkerd for workflow pods - sidecars block Argo completion detection
+  podMetadata:
+    annotations:
+      linkerd.io/inject: disabled
+  # Clean up pods on successful workflow completion (keeps failed pods for debugging)
+  podGC:
+    strategy: OnWorkflowSuccess
+  entrypoint: dispatch
+  arguments:
+    parameters:
+      - name: commit-sha
+        description: "Git commit SHA that triggered the build"
+      - name: commit-message
+        description: "Commit message"
+      - name: repo
+        default: "509-Digital/prometheus-exporter"
+
+  volumes:
+    - name: github-app-key
+      secret:
+        secretName: github-app-credentials
+    - name: workspace
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: scripts
+      configMap:
+        name: argo-workflow-scripts
+        defaultMode: 0755
+    - name: prometheus-exporter-scripts
+      configMap:
+        name: prometheus-exporter-build-scripts
+        defaultMode: 0755
+
+  templates:
+    - name: dispatch
+      dag:
+        tasks:
+          - name: get-token
+            template: github-app-token
+          - name: clone-and-dispatch
+            template: clone-and-dispatch
+            dependencies: [get-token]
+            arguments:
+              parameters:
+                - name: git-token
+                  value: "{{tasks.get-token.outputs.result}}"
+
+    - name: github-app-token
+      script:
+        image: harbor.509.digital/proxy-docker-hub/library/alpine:3.23
+        command: [sh, -c]
+        source: |
+          apk add --no-cache openssl curl jq > /dev/null 2>&1
+          /scripts/github-app-token.sh
+        volumeMounts:
+          - name: github-app-key
+            mountPath: /github-app
+            readOnly: true
+          - name: scripts
+            mountPath: /scripts
+            readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+
+    - name: clone-and-dispatch
+      inputs:
+        parameters:
+          - name: git-token
+      serviceAccountName: argo-workflow-dispatcher
+      initContainers:
+        - name: git-clone
+          image: harbor.509.digital/proxy-docker-hub/alpine/git:2.52.0
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              git clone --depth 50 https://x-access-token:{{inputs.parameters.git-token}}@github.com/{{workflow.parameters.repo}}.git /workspace/src
+              cd /workspace/src
+              git checkout {{workflow.parameters.commit-sha}}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      script:
+        image: harbor.509.digital/proxy-docker-hub/library/alpine:3.23
+        command: [sh, -c]
+        source: |
+          apk add --no-cache git yq kubectl > /dev/null 2>&1
+          /prometheus-exporter-scripts/dispatcher.sh
+        env:
+          - name: COMMIT_SHA
+            value: "{{workflow.parameters.commit-sha}}"
+          - name: REPO
+            value: "{{workflow.parameters.repo}}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: prometheus-exporter-scripts
+            mountPath: /prometheus-exporter-scripts
+            readOnly: true
+          - name: scripts
+            mountPath: /scripts
+            readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi

@@ -1,0 +1,14 @@
+# Container versions manifest - Kubescape Prometheus Exporter
+# Since this repo IS the source code, builds are triggered by:
+#   - Source code changes (.go files, go.mod, go.sum)
+#   - Dockerfile changes
+#   - bump version change (force rebuild)
+#
+# The image is tagged with the triggering commit SHA (not a version string).
+
+harbor_project: "security"
+
+apps:
+  prometheus-exporter:
+    enabled: true
+    bump: 0.0.1

@@ -1,4 +1,4 @@
-DOCKERFILE_PATH=./build/Dockerfile
+DOCKERFILE_PATH=./builds/prometheus-exporter/Dockerfile
 BINARY_NAME=prometheus-exporter
 
 IMAGE?=harbor.509.digital/security/$(BINARY_NAME)

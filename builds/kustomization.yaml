@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No namespace override — resources specify their own namespaces:
+#   WorkflowTemplates + ConfigMap → argo
+#   Sensor → argo-events
+
+resources:
+  - build-template.yaml
+  - dispatcher-template.yaml
+  - sensor.yaml
+
+# Generate ConfigMap from dispatcher script
+configMapGenerator:
+  - name: prometheus-exporter-build-scripts
+    namespace: argo
+    files:
+      - scripts/dispatcher.sh
+    options:
+      disableNameSuffixHash: true
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: prometheus-exporter-builds
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
