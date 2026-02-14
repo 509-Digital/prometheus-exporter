@@ -11,4 +11,4 @@ harbor_project: "security"
 apps:
   prometheus-exporter:
     enabled: true
-    bump: 0.0.1
+    bump: 0.0.2
