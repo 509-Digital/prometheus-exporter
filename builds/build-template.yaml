@@ -9,10 +9,6 @@ metadata:
   name: build-prometheus-exporter
   namespace: argo
 spec:
-  # Disable Linkerd for workflow pods - sidecars block Argo completion detection
-  podMetadata:
-    annotations:
-      linkerd.io/inject: disabled
   # 30 minutes - Go builds are fast
   activeDeadlineSeconds: 1800
   # Clean up pods on successful workflow completion (keeps failed pods for debugging)

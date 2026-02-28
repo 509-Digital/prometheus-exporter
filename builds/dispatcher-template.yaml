@@ -8,10 +8,6 @@ metadata:
   name: prometheus-exporter-build-dispatcher
   namespace: argo
 spec:
-  # Disable Linkerd for workflow pods - sidecars block Argo completion detection
-  podMetadata:
-    annotations:
-      linkerd.io/inject: disabled
   # Clean up pods on successful workflow completion (keeps failed pods for debugging)
   podGC:
     strategy: OnWorkflowSuccess
