@@ -5,7 +5,7 @@
 # ============================================
 # Stage 1: Build Go binary
 # ============================================
-FROM harbor.509.digital/proxy-docker-hub/library/golang:1.25-bookworm AS builder
+FROM harbor-core.harbor.svc.cluster.local/proxy-docker-hub/library/golang:1.25-bookworm AS builder
 
 ARG COMMIT_SHA
 ARG VERSION
