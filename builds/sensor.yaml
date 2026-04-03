@@ -10,6 +10,7 @@ spec:
   # NOTE: argo-events images run as root by default (UID 0).
   # Non-root not yet supported - see https://github.com/argoproj/argo-events/issues/3784
   template:
+    serviceAccountName: argo-events-sensor-sa
     container:
       resources:
         requests:

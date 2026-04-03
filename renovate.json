@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits"
+  ],
+  "dependencyDashboardApproval": true,
+  "labels": [
+    "dependencies"
+  ],
+  "timezone": "America/Los_Angeles",
+  "schedule": [
+    "before 9am on monday"
+  ],
+  "prHourlyLimit": 5,
+  "prConcurrentLimit": 10,
+  "registryAliases": {
+    "harbor.509.digital/proxy-docker-hub": "docker.io"
+  },
+  "kubernetes": {
+    "managerFilePatterns": [
+      "/builds/.+\\.yaml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Group build pipeline images",
+      "groupName": "build-tools",
+      "matchPackageNames": [
+        "/alpine/",
+        "gcr.io/kaniko-project/executor"
+      ]
+    },
+    {
+      "description": "Group Kubescape Go modules",
+      "groupName": "kubescape",
+      "matchPackageNames": [
+        "/kubescape/"
+      ]
+    },
+    {
+      "description": "Group Kubernetes API Go modules",
+      "groupName": "k8s-api",
+      "matchPackageNames": [
+        "/k8s.io/"
+      ]
+    },
+    {
+      "description": "Group Prometheus Go modules",
+      "groupName": "prometheus",
+      "matchPackageNames": [
+        "/prometheus/"
+      ]
+    }
+  ]
+}
